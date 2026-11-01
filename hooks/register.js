@@ -17,7 +17,7 @@
 //   any time         /handoff, the band button, or the pane
 
 import {
-  normalizeSettings, handoffLimit, levelOf, newMessages, nextCursor, toRecords, buildChunks, parseChunk, mergeParts, lineageRecords,
+  normalizeSettings, settingsOverrides, handoffLimit, capByCompaction, levelOf, newMessages, nextCursor, toRecords, buildChunks, parseChunk, mergeParts, lineageRecords,
   chunkName, turnIndex, searchRecords, parseRef, readRecords, buildCard, emergencyMessages, messageChars,
   telemetryNote, noteDue, emptyStats, addRequest, projectSlug, joinPath, newThreadId, sessionDirName,
   nextSessionKey, newThread, newSessionEntry, psQuote, tokensOf, short, firstLine, clockTime, CHARS_PER_TOKEN,
@@ -42,6 +42,8 @@ let records = [] // records of the thread, loaded lazily from chunks
 let recordsLoaded = false
 let looseStats = emptyStats() // usage seen before the thread's first write
 let usageNow = { tokens: 0, window: 0, percent: 0 }
+let compactAt = 0 // Claude Code's own auto-compaction point; 0 = unknown or off
+let compactFor = -1 // the window compactAt was read for: read again when the model changes
 let phase = null
 let failure = null
 let pending = null // { sid, card, from, tokens }
@@ -131,7 +133,7 @@ function stats() {
 
 function currentLimit() {
   if (ctx?.envLimit > 0) return ctx.envLimit
-  return handoffLimit(settings, usageNow.window || 200_000)
+  return capByCompaction(handoffLimit(settings, usageNow.window || 200_000), compactAt)
 }
 
 async function loadSettings($) {
@@ -350,6 +352,21 @@ async function refreshUsage($) {
     const { context } = await $.session.usage()
     if (context?.window) usageNow = { tokens: context.tokens ?? 0, window: context.window, percent: context.percent ?? Math.round(((context.tokens ?? 0) / context.window) * 100) }
   } catch {}
+  if (usageNow.window && compactFor !== usageNow.window) await readCompactPoint($)
+}
+
+// Where Claude Code compacts on its own. The 'summary' breakdown is estimated
+// locally (no API call); it is read once per window, so a /model switch or a
+// changed CLAUDE_CODE_AUTO_COMPACT_WINDOW in a new session is picked up.
+async function readCompactPoint($) {
+  compactFor = usageNow.window
+  try {
+    const { context } = await $.session.usage({ breakdown: 'summary' })
+    const b = context?.breakdown
+    compactAt = b && b.isAutoCompactEnabled !== false && b.autoCompactThreshold > 0 ? b.autoCompactThreshold : 0
+  } catch {
+    compactAt = 0
+  }
 }
 
 async function gitBranch($) {
@@ -709,6 +726,8 @@ async function viewModel($, columns) {
     unattended: isUnattended(),
     unattendedForced: !!ctx?.envUnattended,
     limitFromEnv: ctx?.envLimit > 0,
+    compactAt,
+    cappedByCompaction: !(ctx?.envLimit > 0) && compactAt > 0 && currentLimit() < handoffLimit(settings, usageNow.window || 200_000),
     floor: floor ?? 0,
     grown: grewEnough(usageNow.tokens, floor ?? 0, currentLimit()),
     asking,
@@ -765,7 +784,7 @@ function makeActions($) {
     setTab: (t) => { tab = t; $.ui.invalidate('ui.render') },
     setSetting: async (key, value) => {
       settings = normalizeSettings({ ...settings, [key]: value })
-      try { await $.store.set('settings', settings) } catch {}
+      try { await $.store.set('settings', settingsOverrides(settings)) } catch {} // later default changes still apply
       $.ui.invalidate('ui.render')
     },
     search: async (q) => {

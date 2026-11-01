@@ -3,7 +3,7 @@
 // Single-width glyphs only (● ▲ ↯ ✓ ✕ █ ░ │ ▁..█), so it lines up in Windows
 // Terminal, conhost, iTerm2 and Terminal.app alike.
 
-import { gauge, short, sparkline, bytes, savings, clockTime, ago, MODES, THRESHOLDS, CAPS } from './lib.js'
+import { gauge, short, sparkline, bytes, savings, clockTime, ago, MODES, THRESHOLDS, CAPS, thresholdFor } from './lib.js'
 
 const LEVEL = {
   ok: { icon: '●', color: 'green', word: 'healthy' },
@@ -130,7 +130,7 @@ function overview(el, m, act, cols) {
   const rows = []
   if (m.window) {
     rows.push(kv(Text, Box, 'Context', Box({ flexDirection: 'row', children: [Text({ color: lv.color, children: [gauge(m.tokens, m.window, m.limit, gw)] }), Text({ children: ['  ' + (m.percent ?? 0) + '% · ' + short(m.tokens) + ' of ' + short(m.window)] })] })))
-    const why = m.limitFromEnv ? 'set by SESSION_TRANSFER_LIMIT' : m.settings.thresholdPct + '% of window' + (m.settings.capTokens ? ', cap ' + short(m.settings.capTokens) : '')
+    const why = m.limitFromEnv ? 'set by SESSION_TRANSFER_LIMIT' : m.cappedByCompaction ? "just under Claude Code's auto-compact at " + short(m.compactAt) : thresholdFor(m.settings, m.window) + '% of window' + (m.settings.thresholdPct === 'auto' ? ', default' : '') + (m.settings.capTokens ? ', cap ' + short(m.settings.capTokens) : '')
     rows.push(kv(Text, Box, 'Handoff', Text({ children: ['at ' + short(m.limit) + ' tokens (' + why + ') · mode ' + m.settings.mode + (m.unattended ? ' · UNATTENDED' : '')] })))
   } else {
     rows.push(kv(Text, Box, 'Context', 'no reading yet: it appears after the first reply'))
@@ -299,8 +299,8 @@ function settingsTab(el, m, act) {
         key: 'st-set-threshold',
         label: 'Hand off at',
         value: String(s.thresholdPct),
-        options: THRESHOLDS.map((v) => ({ value: String(v), label: v + '% of the context window' })),
-        onSelect: (v) => act.setSetting('thresholdPct', Number(v)),
+        options: THRESHOLDS.map((v) => ({ value: String(v), label: v === 'auto' ? 'default: 80% of a 200k window (160k), 70% of 1M (700k)' : v + '% of the context window' })),
+        onSelect: (v) => act.setSetting('thresholdPct', v === 'auto' ? 'auto' : Number(v)),
       }),
       Select({
         key: 'st-set-cap',

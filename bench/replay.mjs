@@ -3,7 +3,7 @@
 //   stock     what happened: the context grew, auto-compaction ran when it filled
 //   transfer  session-transfer: hand off to a fresh context at the limit
 //
-//   node bench/replay.mjs [--limit 120000] [--card 1500] [--lookup 3000] [--min-requests 60]
+//   node bench/replay.mjs [--limit <tokens>] [--card 1500] [--lookup 3000] [--min-requests 60]
 //                         [--top 15] [--json] [transcript.jsonl | folder ...]
 //
 // With no paths it scans ~/.claude/projects (or $CLAUDE_CONFIG_DIR/projects).
@@ -14,6 +14,13 @@
 //   read from the usage the API returned.
 // - Growth per request g = P_i - P_{i-1}. Across a compact_boundary the growth
 //   is measured from the boundary's postTokens. A drop without a boundary is 0.
+// - The limit is the mod's default for the session's window: 160k on a 200k
+//   window, 700k on 1M (--limit pins one number for every session). The
+//   transcript doesn't name the window, so it is inferred: 1M when a prompt
+//   or a compaction's preTokens went past 200k, else 200k. A 200k session can
+//   never reach 700k, so one limit for all would compare the impossible.
+//   Like the mod, the limit stays 5k under the point where Claude Code
+//   auto-compacted that session (its lowest auto preTokens) when that is lower.
 // - transfer replays the same growth from a fresh base: B0 (the median first
 //   prompt of fresh sessions: system prompt + tools + CLAUDE.md) + card +
 //   lookup allowance. When the simulated prompt crosses the limit, that request
@@ -41,7 +48,9 @@ import { homedir } from 'node:os'
 
 const argv = process.argv.slice(2)
 const opt = (name, dflt) => (argv.includes('--' + name) ? Number(argv[argv.indexOf('--' + name) + 1]) : dflt)
-const LIMIT = opt('limit', 120_000)
+const LIMIT = opt('limit', null) // null: the mod's default for each session's window
+const limitFor = (window) => LIMIT ?? Math.floor((window * (window > 200_000 ? 70 : 80)) / 100) // lib.js autoThresholdPct
+const fmtLimit = () => (LIMIT ? fmt(LIMIT) : 'default by window (160k on 200k, 700k on 1M)')
 const CARD = opt('card', 1_500)
 const LOOKUP = opt('lookup', 3_000)
 // prompt: hand off at the next prompt the person types (conservative).
@@ -122,8 +131,12 @@ function simulate(reqs) {
   const calls = reqs.filter((r) => r.P !== undefined)
   if (!calls.length) return null
   const B0 = Math.min(calls[0].P, GLOBAL_B0)
+  const window = reqs.some((q) => q.P > 200_000 || q.pre > 200_000) ? 1_000_000 : 200_000
+  const autoAt = reqs.filter((q) => q.boundary && q.trigger === 'auto' && q.pre > 0).map((q) => q.pre)
+  const compactAt = autoAt.length ? Math.min(...autoAt) : 0
+  const limit = compactAt > 5_000 ? Math.min(limitFor(window), compactAt - 5_000) : limitFor(window) // lib.js capByCompaction
   const base = B0 + CARD + LOOKUP
-  const r = { requests: calls.length, compactions: 0, manualCompactions: 0, compactMs: 0, handoffs: 0, B0,
+  const r = { window, limit, compactAt, requests: calls.length, compactions: 0, manualCompactions: 0, compactMs: 0, handoffs: 0, B0,
     stock: { prompt: 0, cost: 0, billed: 0, peak: 0 }, transfer: { prompt: 0, cost: 0, peak: 0 } }
   let prevP = null
   let afterBoundary = null
@@ -187,7 +200,7 @@ function simulate(reqs) {
     r.transfer.peak = Math.max(r.transfer.peak, sim)
     r.transfer.cost += cost(simPrev, sim)
     simPrev = sim
-    if (sim >= LIMIT) due = true
+    if (sim >= limit) due = true
   }
   return r
 }
@@ -222,7 +235,7 @@ if (JSON_OUT) {
 }
 
 console.log('fresh-context base (median first prompt of ' + firsts.length + ' fresh sessions): ' + fmt(GLOBAL_B0))
-console.log('session-transfer replay · limit ' + fmt(LIMIT) + ' · card ' + fmt(CARD) + ' · lookup allowance ' + fmt(LOOKUP) + ' per handoff · ' + rows.length + ' sessions with >= ' + MIN_REQ + ' requests\n')
+console.log('session-transfer replay · limit ' + fmtLimit() + ' · card ' + fmt(CARD) + ' · lookup allowance ' + fmt(LOOKUP) + ' per handoff · ' + rows.length + ' sessions with >= ' + MIN_REQ + ' requests\n')
 const pad = (s, n) => String(s).padEnd(n)
 const lpad = (s, n) => String(s).padStart(n)
 console.log(pad('session', 52) + lpad('reqs', 6) + lpad('compact', 8) + lpad('handoff', 8) + lpad('avg prompt', 18) + lpad('peak', 14) + lpad('input cost (equiv. tokens)', 32))

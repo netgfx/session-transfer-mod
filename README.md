@@ -95,7 +95,7 @@ does the same inside Claude Code:
 |---|---|
 | append-only `.state` log, header line + raw body | immutable chunk files, `@@ r<n> <kind> S<k> T<turn> <time> len=<chars>` + exact body, read back after writing |
 | "time 3m12s context 48210" after every tool result | a short, attributed context note after tool results near the limit only |
-| hard `context_limit` | a limit you choose (default: 60% of the window, at most 160k), then a yes/no |
+| hard `context_limit` | a limit by window size (160k on 200k, 700k on 1M, always under Claude Code's own auto-compact point), then a yes/no |
 | `/continue`: blank session + pointer to the log | `/clear` + a **card** on the first message: archive location, how to search, where work stopped, task list, files touched, notes |
 | `rg` over the `.log` | `history_index`, `history_search`, `history_read`, or `rg` over the folder |
 | AGENTS.md for durable knowledge | `history_note`: notes that ride in every later card |
@@ -120,6 +120,27 @@ Turn unattended on:
 - **Server limit:** `SESSION_TRANSFER_LIMIT=<tokens>` sets the limit directly,
   ignoring the percentage settings.
 
+Where the limit sits:
+
+| model window | default limit | why |
+|---|---|---|
+| 200k | **160k** (80%) | just under Claude Code's auto-compact (about 167k: the window less its 33k buffer) |
+| 1M | **700k** (70%) | a wider margin where answers degrade most and each request costs the most |
+
+- The window comes from Claude Code (`$.session.usage()`), so a `/model`
+  switch is picked up.
+- **Never past auto-compaction.** The mod reads Claude Code's own
+  auto-compact point (`/context`'s figure). When it's lower than the limit,
+  for example because `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, your settings or your
+  account lower it, the limit moves to 5k under it, so the question comes
+  before Claude Code would compact. The panel says so: *at 247k tokens (just
+  under Claude Code's auto-compact at 252k)*.
+- Settings → *Hand off at* picks a fixed share of the window (50–90%), and
+  *Token cap* sets a ceiling. Only what you change is stored, so the window
+  defaults keep applying to everything else.
+- A lower limit saves more (see the benchmark below). The defaults favor
+  long sessions over cost.
+
 Two guards apply in every mode:
 
 - **Growth floor.** A session is never swapped when it's over the limit only
@@ -138,7 +159,7 @@ exists.
 
 ## Proof
 
-**Tests that fail when the rules break.** `claude plugin test` runs 42 tests.
+**Tests that fail when the rules break.** `claude plugin test` runs 47 tests.
 The approval tests drive Claude Code's real question path (an AskUserQuestion
 stub that records every question and its options). They prove:
 
@@ -148,10 +169,11 @@ stub that records every question and its options). They prove:
 - manual mode never asks
 - unattended never asks, survives its own swaps, and never loops on a fresh session's base size
 - the context note never orders a supervised session to stop
+- the default limit is 160k on a 200k window and 700k on 1M, and a lower auto-compact point wins
 
 `node scripts/mutation-check.mjs` checks that the tests themselves work. It
-plants 11 bugs in those rules, one at a time, and requires the suite to fail
-for each: **11/11 caught**.
+plants 15 bugs in those rules, one at a time, and requires the suite to fail
+for each: **15/15 caught**.
 
 **Recall, live.** `node scripts/e2e-live.mjs` drives a real headless Claude
 Code session on Haiku:
@@ -178,25 +200,36 @@ PASS the secret was not re-read from the file after the handoff
 own `~/.claude/projects/*.jsonl` and replays each session's prompt growth two
 ways: as it really happened (stock, compactions included), and with
 handoffs. Both use one cache price model. Results on this machine, 33
-sessions with 60 or more requests (5,118 requests):
+sessions with 60 or more requests (5,275 requests; 25 of them on a 1M
+window, 8 on 200k):
 
 | hand off at | swap at your next message (`--handoff prompt`, conservative) | swap when Claude stops at the limit (`--handoff stop`: you said yes, or unattended) |
 |---|---|---|
-| 80k | input cost −41% · prompt tokens −46% | input cost −65% · prompt tokens −75% |
-| **120k (default on a 200k window)** | **input cost −38% · prompt tokens −43%** | **input cost −60% · prompt tokens −68%** |
-| 160k | input cost −34% · prompt tokens −39% | input cost −54% · prompt tokens −61% |
-| 200k | input cost −32% · prompt tokens −36% | input cost −48% · prompt tokens −55% |
+| **default: 160k on 200k, 700k on 1M** | **input cost −8% · prompt tokens −9%** | **input cost −13% · prompt tokens −14%** |
+| 80k | input cost −41% · prompt tokens −47% | input cost −65% · prompt tokens −76% |
+| 120k | input cost −39% · prompt tokens −44% | input cost −60% · prompt tokens −69% |
+| 160k | input cost −35% · prompt tokens −40% | input cost −54% · prompt tokens −62% |
+| 300k | input cost −24% · prompt tokens −26% | input cost −36% · prompt tokens −41% |
+| 500k | input cost −14% · prompt tokens −16% | input cost −21% · prompt tokens −24% |
+
+The defaults are set for long sessions, not cost. Most of these sessions ran
+on a 1M window, and few reached 700k before Claude Code compacted them, so
+the default saves little here. The default row still caps each session 5k
+under the point where Claude Code actually auto-compacted it, as the mod
+does. For cost, a fixed limit such as 120k (`SESSION_TRANSFER_LIMIT=120000`,
+or *Token cap* in Settings) saves the most.
 
 How the replay works, and its limits:
 
 - Each request's prompt size comes from the API usage that request recorded.
 - Cached reads cost 0.1x and cache writes 1.25x.
+- Each session's window is inferred (1M when a prompt or compaction went past 200k), and its limit follows the mod's default for that window.
 - Each stock compaction pays its summarizer, which reads the whole context and writes 8k tokens.
 - A `/compact` you typed yourself runs, and is charged, on both sides.
 - The request that crosses the limit is billed in full.
 - Every handoff pays 1.5k for the card plus a 3k lookup allowance.
-- The fresh-session base is the median first prompt of 125 fresh sessions (47k).
-- The model prices stock *below* what was actually billed (159.3M against 172.4M), so the comparison errs in stock's favor.
+- The fresh-session base is the median first prompt of 144 fresh sessions (47k).
+- The model prices stock *below* what was actually billed (165.6M against 179.1M), so the comparison errs in stock's favor.
 - It does **not** measure answer quality or extra turns. The e2e check covers recall; a quality claim needs paired runs of the same task.
 
 ## Install
@@ -283,10 +316,10 @@ What `claude plugin validate` lists:
 
 ```bash
 claude plugin validate .
-claude plugin test                         # 42 tests
+claude plugin test                         # 47 tests
 node scripts/mutation-check.mjs            # plants 11 bugs in the approval rules; each must fail the suite
 node scripts/e2e-live.mjs                  # live recall check on Haiku (a few cents)
-node bench/replay.mjs                      # replay your transcripts; --handoff prompt|stop --limit 160000 --json
+node bench/replay.mjs                      # replay your transcripts; --handoff prompt|stop --limit <tokens> --json
 pwsh -File scripts/capture-screenshots.ps1 # re-take docs/screenshots (opens a terminal; hands off the keyboard)
 ```
 

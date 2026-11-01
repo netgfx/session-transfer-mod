@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import {
-  normalizeSettings, handoffLimit, levelOf, fingerprint, newMessages, nextCursor, toRecords, formatRecord, parseChunk,
+  normalizeSettings, settingsOverrides, autoThresholdPct, capByCompaction, handoffLimit, levelOf, fingerprint, newMessages, nextCursor, toRecords, formatRecord, parseChunk,
   buildChunks, turnIndex, searchRecords, parseRef, readRecords, buildCard, emergencyMessages, telemetryNote, noteDue,
   addRequest, emptyStats, savings, gauge, sparkline, projectSlug, joinPath, nextSessionKey, psQuote, limitAction, snoozeAfterNo, suggestQuestion, grewEnough, CHUNK_MAX_BYTES, PART_CHARS, MESSAGES_CAP, utf8Bytes, mergeParts, lineageRecords, splitBody,
 } from '../hooks/lib.js'
@@ -17,6 +17,25 @@ test('settings normalize and the limit takes the smaller of percent and cap', as
   expect(handoffLimit(normalizeSettings({ thresholdPct: 60, capTokens: 160_000 }), 200_000)).toBe(120_000)
   expect(handoffLimit(normalizeSettings({ thresholdPct: 60, capTokens: 160_000 }), 1_000_000)).toBe(160_000)
   expect(handoffLimit(normalizeSettings({ thresholdPct: 50, capTokens: 0 }), 1_000_000)).toBe(500_000)
+  // the shipped default: by window size, no cap
+  const d = normalizeSettings(null)
+  expect(d.thresholdPct).toBe('auto')
+  expect(d.capTokens).toBe(0)
+  expect(handoffLimit(d, 200_000)).toBe(160_000)
+  expect(handoffLimit(d, 1_000_000)).toBe(700_000)
+  expect(autoThresholdPct(200_000)).toBe(80)
+  expect(autoThresholdPct(1_000_000)).toBe(70)
+  expect(handoffLimit(normalizeSettings({ capTokens: 500_000 }), 1_000_000)).toBe(500_000) // a cap still wins
+  expect(normalizeSettings({ thresholdPct: 'auto' }).thresholdPct).toBe('auto')
+  expect(normalizeSettings({ thresholdPct: 'nonsense' }).thresholdPct).toBe('auto')
+  // Claude Code's own compaction point caps the limit only when it is lower
+  expect(capByCompaction(700_000, 252_000)).toBe(247_000)
+  expect(capByCompaction(160_000, 167_000)).toBe(160_000)
+  expect(capByCompaction(700_000, 967_000)).toBe(700_000)
+  expect(capByCompaction(700_000, 0)).toBe(700_000) // unknown or auto-compaction off
+  // only changes are stored, so a later default change reaches everyone who did not pick a value
+  expect(settingsOverrides(normalizeSettings({ mode: 'manual' }))).toEqual({ mode: 'manual' })
+  expect(settingsOverrides(normalizeSettings(null))).toEqual({})
   expect(levelOf(50, 100)).toBe('ok')
   expect(levelOf(70, 100)).toBe('filling')
   expect(levelOf(90, 100)).toBe('near')

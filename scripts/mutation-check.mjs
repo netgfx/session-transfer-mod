@@ -78,6 +78,30 @@ const MUTANTS = [
     from: '  if (unattended && autoContinue) {',
     to: '  if (autoContinue) {',
   },
+  {
+    name: 'the default limit ignores the window size (1M gets 80% = 800k)',
+    file: 'hooks/lib.js',
+    from: '  return Number(window) > 200_000 ? 70 : 80',
+    to: '  return 80',
+  },
+  {
+    name: 'the old 160k cap is back: a 1M window never gets past 160k',
+    file: 'hooks/lib.js',
+    from: '  capTokens: 0, //',
+    to: '  capTokens: 160_000, //',
+  },
+  {
+    name: 'the whole settings object is stored, freezing the defaults of the day',
+    file: 'hooks/register.js',
+    from: "$.store.set('settings', settingsOverrides(settings))",
+    to: "$.store.set('settings', settings)",
+  },
+  {
+    name: "Claude Code's lower auto-compaction point is ignored (it compacts before the question)",
+    file: 'hooks/register.js',
+    from: '  return capByCompaction(handoffLimit(settings, usageNow.window || 200_000), compactAt)',
+    to: '  return handoffLimit(settings, usageNow.window || 200_000)',
+  },
 ]
 
 function run() {

@@ -6,6 +6,8 @@ type Opts = {
   tokens?: number
   window?: number
   settings?: any
+  compactAt?: number // Claude Code's auto-compaction point, as /context reports it; absent = off
+  defaults?: boolean // run on the shipped default limit instead of the pinned one
   files?: Record<string, string>
   clearWorks?: boolean
   compact?: (e: any) => any
@@ -15,6 +17,11 @@ type Opts = {
 const user = (text: string) => ({ role: 'user', text, toolUses: [] })
 const asst = (text: string, toolUses: any[] = []) => ({ role: 'assistant', text, toolUses })
 const use = (id: string, tool: string, input: any, text?: string) => ({ tool_use_id: id, tool, input, text })
+
+// The approval scenarios below run on a pinned limit of 120k (60% of the 200k
+// window) so their numbers stay readable; the shipped defaults (160k on 200k,
+// 700k on 1M) have their own tests that pass defaults: true.
+const PINNED = { thresholdPct: 60 }
 
 // A fake world: files in a Map, a session whose id changes on /clear, and a
 // person in front of the AskUserQuestion dialog who answers w.answer.
@@ -30,7 +37,7 @@ function world(on: any, opts: Opts = {}) {
     tokens: opts.tokens ?? 10_000,
     window: opts.window ?? 200_000,
     files: new Map<string, string>(Object.entries(opts.files ?? {})),
-    store: new Map<string, unknown>(opts.settings ? [['settings', opts.settings]] : []),
+    store: new Map<string, unknown>(opts.defaults ? (opts.settings ? [['settings', opts.settings]] : []) : [['settings', { ...PINNED, ...opts.settings }]]),
     submitted: [] as any[],
     filled: [] as string[],
     commands: [] as string[],
@@ -46,7 +53,10 @@ function world(on: any, opts: Opts = {}) {
   on('session.root', () => ({ value: cwd }))
   on('session.id', () => ({ value: w.sid }))
   on('session.messages', () => ({ value: w.msgs }))
-  on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: w.tokens, window: w.window, percent: Math.round((w.tokens / w.window) * 100) } } }))
+  on('session.usage', ($: any, e: any) => ({ value: { startedAt: 0, rateLimits: [], context: {
+    tokens: w.tokens, window: w.window, percent: Math.round((w.tokens / w.window) * 100),
+    ...(e?.breakdown ? { breakdown: { categories: [], totalTokens: w.tokens, maxTokens: w.window, rawMaxTokens: w.window, autocompactSource: 'auto', percentage: 0, gridRows: [], model: 'm', memoryFiles: [], mcpTools: [], agents: [], isAutoCompactEnabled: opts.compactAt !== undefined, ...(opts.compactAt ? { autoCompactThreshold: opts.compactAt } : {}), apiUsage: null } } : {}),
+  } } }))
   mock.env(on, { ...(os === 'windows' ? { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\me' } : { HOME: '/Users/me' }), ...(opts.env ?? {}) })
   on('store.get', ($: any, e: any) => ({ value: w.store.get(e.key) }))
   on('store.set', ($: any, e: any) => { w.store.set(e.key, e.value); return { value: undefined } })
@@ -190,7 +200,7 @@ test('the lookup tools answer from the archive and count their cost', async ($, 
 // ---------------------------------------------------------------- supervised: nothing swaps without a yes
 
 test('auto mode: at the limit the person is asked yes/no; a yes swaps and the card reaches the fresh session', async ($, on) => {
-  const { w, clock } = world(on, { tokens: 130_000 }) // 65% of 200k; the default limit is 60% = 120k
+  const { w, clock } = world(on, { tokens: 130_000 }) // 65% of 200k; the pinned limit is 60% = 120k
   w.answer = 'yes'
   await start($, w)
   await turn($, w, [user('refactor the API layer'), asst('Done with step 1', [use('t', 'TodoWrite', { todos: [{ content: 'step 2: routes', status: 'pending' }] }, 'ok')])])
@@ -391,6 +401,79 @@ test('unattended never loops: a fresh session over the limit only by its own fir
   const again = await $.prompt.submit(composer('and more'))
   expect(again.drop).toBeUndefined()
   expect(w.commands.filter((c) => c === 'clear').length).toBe(1)
+})
+
+// ---------------------------------------------------------------- the shipped default limit
+
+test('default limit on a 200k window is 160k: nothing at 150k, a question at 165k', async ($, on) => {
+  const { w, clock } = world(on, { defaults: true, tokens: 150_000 })
+  w.answer = 'no'
+  await start($, w)
+  await turn($, w, [user('task'), asst('step 1')])
+  await settle(clock)
+  expect(w.asked.length).toBe(0)
+  w.tokens = 165_000
+  await turn($, w, [user('next'), asst('step 2')])
+  await settle(clock)
+  expect(w.asked.length).toBe(1)
+  expect(w.asked[0].question).toMatch(/Context is at 165k tokens \(limit 160k\)/)
+})
+
+test('default limit on a 1M window is 700k: nothing at 650k, a question at 710k', async ($, on) => {
+  const { w, clock } = world(on, { defaults: true, window: 1_000_000, tokens: 650_000 })
+  w.answer = 'no'
+  await start($, w)
+  await turn($, w, [user('task'), asst('step 1')])
+  await settle(clock)
+  expect(w.asked.length).toBe(0)
+  w.tokens = 710_000
+  await turn($, w, [user('next'), asst('step 2')])
+  await settle(clock)
+  expect(w.asked.length).toBe(1)
+  expect(w.asked[0].question).toMatch(/Context is at 710k tokens \(limit 700k\)/)
+})
+
+test('a lower auto-compaction point wins: the question comes 5k before Claude Code would compact', async ($, on) => {
+  // a 1M window whose compaction window was lowered (CLAUDE_CODE_AUTO_COMPACT_WINDOW, settings, the account)
+  const { w, clock } = world(on, { defaults: true, window: 1_000_000, compactAt: 252_000, tokens: 240_000 })
+  w.answer = 'no'
+  await start($, w)
+  await turn($, w, [user('task'), asst('step 1')])
+  await settle(clock)
+  expect(w.asked.length).toBe(0)
+  w.tokens = 250_000
+  await turn($, w, [user('next'), asst('step 2')])
+  await settle(clock)
+  expect(w.asked.length).toBe(1)
+  expect(w.asked[0].question).toMatch(/\(limit 247k\)/)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+  await must(ui, { type: 'Text', text: /at 247k tokens \(just under Claude Code's auto-compact at 252k\)/ })
+  await ui.unmount()
+})
+
+test('a compaction point past the limit changes nothing: 700k stays on a 1M window', async ($, on) => {
+  const { w, clock } = world(on, { defaults: true, window: 1_000_000, compactAt: 967_000, tokens: 690_000 })
+  w.answer = 'no'
+  await start($, w)
+  await turn($, w, [user('task'), asst('step 1')])
+  await settle(clock)
+  expect(w.asked.length).toBe(0)
+  w.tokens = 705_000
+  await turn($, w, [user('next'), asst('step 2')])
+  await settle(clock)
+  expect(w.asked[0]?.question).toMatch(/\(limit 700k\)/)
+})
+
+test('changing one setting stores only that change, so the window-based default still applies', async ($, on) => {
+  const { w } = world(on, { defaults: true, window: 1_000_000, tokens: 10_000 })
+  await start($, w)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as any)
+  await ui.press({ key: 'st-tab-settings' })
+  await ui.select({ key: 'st-set-mode', value: 'manual' })
+  expect(w.store.get('settings')).toEqual({ mode: 'manual' })
+  await ui.press({ key: 'st-tab-overview' })
+  await must(ui, { type: 'Text', text: /at 700k tokens \(70% of window, default\)/ })
+  await ui.unmount()
 })
 
 test('SESSION_TRANSFER_LIMIT sets the limit in tokens, over the settings', async ($, on) => {

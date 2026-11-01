@@ -22,8 +22,10 @@ export const DEFAULT_SETTINGS = {
   // A session marked unattended (per session, or SESSION_TRANSFER_UNATTENDED=1)
   // swaps without asking, whatever the mode says: it has priority.
   mode: 'auto',
-  thresholdPct: 60, // hand off at this share of the context window...
-  capTokens: 160_000, // ...or at this many tokens, whichever comes first (0 = no cap)
+  // hand off at this share of the context window; 'auto' picks it by window
+  // size (see autoThresholdPct): 160k on a 200k window, 700k on a 1M window
+  thresholdPct: 'auto',
+  capTokens: 0, // ...or at this many tokens, whichever comes first (0 = no cap)
   replaceCompaction: true, // answer the engine's auto-compaction with an in-place handoff
   telemetry: true, // tell the model its context size near the limit (mainplane's trick)
   autoContinue: true, // after the model stops for a handoff, continue in the fresh session
@@ -31,7 +33,7 @@ export const DEFAULT_SETTINGS = {
 }
 
 export const MODES = ['auto', 'manual', 'off']
-export const THRESHOLDS = [40, 50, 60, 70, 80]
+export const THRESHOLDS = ['auto', 50, 60, 70, 80, 90]
 export const CAPS = [80_000, 120_000, 160_000, 200_000, 300_000, 0]
 
 // ---------------------------------------------------------------- settings
@@ -40,7 +42,7 @@ export function normalizeSettings(raw) {
   const s = { ...DEFAULT_SETTINGS, ...(raw && typeof raw === 'object' ? raw : {}) }
   if (s.mode === 'ask') s.mode = 'manual' // the 0.1 name
   if (!MODES.includes(s.mode)) s.mode = DEFAULT_SETTINGS.mode
-  s.thresholdPct = clampInt(s.thresholdPct, 10, 95, DEFAULT_SETTINGS.thresholdPct)
+  s.thresholdPct = s.thresholdPct === 'auto' ? 'auto' : clampInt(s.thresholdPct, 10, 95, DEFAULT_SETTINGS.thresholdPct)
   s.capTokens = s.capTokens === 0 ? 0 : clampInt(s.capTokens, 20_000, 2_000_000, DEFAULT_SETTINGS.capTokens)
   for (const k of ['replaceCompaction', 'telemetry', 'autoContinue', 'showBand']) s[k] = s[k] !== false
   return s
@@ -51,10 +53,44 @@ function clampInt(v, lo, hi, dflt) {
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt
 }
 
+/**
+ * The default share of the window: 80% up to a 200k window (160k), 70% above
+ * it (700k of 1M). Large windows keep a wider margin: the tail of a 1M window
+ * is where answers degrade most and each request costs the most.
+ */
+export function autoThresholdPct(window) {
+  return Number(window) > 200_000 ? 70 : 80
+}
+
+/** The share of the window the settings resolve to for this window. */
+export function thresholdFor(settings, window) {
+  return settings.thresholdPct === 'auto' ? autoThresholdPct(window) : settings.thresholdPct
+}
+
+/** How far below Claude Code's own auto-compaction point the limit stays. */
+export const COMPACT_MARGIN = 5_000
+
+/**
+ * The limit, kept under Claude Code's auto-compaction point when that point is
+ * lower (CLAUDE_CODE_AUTO_COMPACT_WINDOW, settings, the account): otherwise the
+ * engine compacts first and the yes/no never comes. 0 = unknown or off.
+ */
+export function capByCompaction(limit, compactAt) {
+  if (!(compactAt > COMPACT_MARGIN)) return limit
+  return Math.min(limit, compactAt - COMPACT_MARGIN)
+}
+
+/** Only the settings that differ from the defaults: what gets stored. */
+export function settingsOverrides(settings) {
+  const out = {}
+  for (const [k, v] of Object.entries(settings)) if (v !== DEFAULT_SETTINGS[k]) out[k] = v
+  return out
+}
+
 /** The token count at which the session hands off. */
 export function handoffLimit(settings, window) {
   const w = Number(window) > 0 ? Number(window) : 200_000
-  const byPct = Math.floor((w * settings.thresholdPct) / 100)
+  const byPct = Math.floor((w * thresholdFor(settings, w)) / 100)
   return settings.capTokens > 0 ? Math.min(byPct, settings.capTokens) : byPct
 }
 
