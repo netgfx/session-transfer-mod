@@ -1,0 +1,8 @@
+{
+  "name": "session-transfer",
+  "version": "0.1.0",
+  "description": "Hands long Claude Code sessions over to a fresh session before compaction, keeping the full transcript as a searchable archive instead of context.",
+  "author": {
+    "name": "netgfx"
+  }
+}
