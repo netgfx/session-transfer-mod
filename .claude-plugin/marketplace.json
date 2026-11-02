@@ -1,0 +1,22 @@
+{
+  "name": "session-transfer-mod",
+  "owner": { "name": "netgfx", "email": "djmid71@gmail.com" },
+  "metadata": {
+    "description": "Marketplace for the session-transfer Claude Code mod",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "session-transfer",
+      "source": "./",
+      "description": "Hands long Claude Code sessions over to a fresh session before compaction, keeping the full transcript as a searchable archive instead of context",
+      "version": "0.1.0",
+      "author": { "name": "Michael Dobekidis", "email": "djmid71@gmail.com" },
+      "homepage": "https://github.com/netgfx/session-transfer-mod",
+      "repository": "https://github.com/netgfx/session-transfer-mod",
+      "license": "MIT",
+      "keywords": ["mod", "sessions", "handoff", "compaction", "context", "archive", "history"],
+      "category": "productivity"
+    }
+  ]
+}

@@ -234,28 +234,42 @@ How the replay works, and its limits:
 
 ## Install
 
-Load it for one session:
+Requires Claude Code 2.1.287 or later (mods).
 
-```powershell
-# Windows PowerShell
-claude --plugin-dir D:\path\to\session-transfer-mod
+From the marketplace (both shells):
+
+```text
+claude plugin marketplace add netgfx/session-transfer-mod
+claude plugin install session-transfer@session-transfer-mod --scope user
 ```
+
+Or, inside Claude Code: `/plugin marketplace add netgfx/session-transfer-mod`,
+then `/plugin install session-transfer@session-transfer-mod`, then
+`/reload-plugins`.
+
+`/plugin` should then list `session-transfer` among the active mods. To
+update later: `claude plugin marketplace update session-transfer-mod`, then
+`/reload-plugins`.
+
+To develop against a checkout, load it for one session:
 
 ```bash
 # macOS / Linux
-claude --plugin-dir ~/path/to/session-transfer-mod
+claude --plugin-dir ~/src/session-transfer-mod
 ```
 
-To load it in every session, including the Desktop app's Code tab, add the
-folder to `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json`. Use an
-absolute path, with `;` between entries on Windows and `:` on macOS:
+```powershell
+# Windows PowerShell
+claude --plugin-dir $HOME\src\session-transfer-mod
+```
+
+To load a checkout in every session, including the Desktop app's Code tab,
+add the folder to `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json`. Use
+an absolute path, with `;` between entries on Windows and `:` on macOS:
 
 ```json
 { "env": { "CLAUDE_CODE_PLUGIN_DIRS": "D:/path/to/session-transfer-mod" } }
 ```
-
-Requires Claude Code 2.1.287 or later (mods). `/plugin` should list
-`session-transfer` among the active mods.
 
 ## Using it
 
